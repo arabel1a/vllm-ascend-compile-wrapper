@@ -34,6 +34,7 @@ from vllm.config import (
     set_current_vllm_config,
 )
 from vllm.config.compilation import CUDAGraphMode
+from vllm.forward_context import BatchDescriptor, set_forward_context
 from vllm.platforms import current_platform
 
 log = logging.getLogger(__name__)
@@ -103,10 +104,20 @@ def main(cfg: DictConfig) -> None:
             out = mod(*inputs)
     else:
         vllm_config = build_vllm_config(cfg)
+        # ACLGraphWrapper reads batch_descriptor + cudagraph_runtime_mode off
+        # the forward context. Without set_forward_context the wrapper trips
+        # the assert in vllm/forward_context.py:223.
+        num_tokens = int(inputs[0].shape[0])
         with set_current_vllm_config(vllm_config):
             backend = VllmBackend(vllm_config)
             compiled = torch.compile(mod, backend=backend, fullgraph=True, dynamic=False)
-            with torch.inference_mode():
+            with torch.inference_mode(), set_forward_context(
+                attn_metadata=None,
+                vllm_config=vllm_config,
+                num_tokens=num_tokens,
+                cudagraph_runtime_mode=CUDAGraphMode.PIECEWISE,
+                batch_descriptor=BatchDescriptor(num_tokens=num_tokens),
+            ):
                 out = compiled(*inputs)
 
     log.info("output shape=%s dtype=%s", tuple(out.shape), out.dtype)
