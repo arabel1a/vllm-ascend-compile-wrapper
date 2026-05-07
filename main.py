@@ -41,6 +41,8 @@ from vllm_ascend.ascend_forward_context import set_ascend_forward_context
 
 log = logging.getLogger(__name__)
 
+import ops
+from ops import run_lora_test
 
 def setup_output_dir(cfg: DictConfig) -> Path:
     out = Path(cfg.output_dir)
@@ -180,7 +182,8 @@ def main(cfg: DictConfig) -> None:
         "Install vllm-ascend in editable mode so its entry point fires."
     )
 
-    mod = hydra.utils.instantiate(cfg.module).to(cfg.device).eval()
+    # mod = hydra.utils.instantiate(cfg.module)
+    mod = eval(cfg.module._target_)
 
     if cfg.get("lora_test", False):
         # lora ops use triton_lora.generate_lora_metadata to build inputs;
@@ -192,7 +195,6 @@ def main(cfg: DictConfig) -> None:
         hidden_size = cfg.get("lora_hidden_size", 64)
         num_loras = cfg.get("lora_num_loras", 2)
         num_requests = cfg.get("lora_num_requests", 3)
-        from debug_compile.ops import run_lora_test
         run_lora_test(mod, rank=rank, hidden_size=hidden_size,
                       num_loras=num_loras, num_requests=num_requests)
         return

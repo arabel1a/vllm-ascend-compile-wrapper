@@ -18,7 +18,9 @@ dtype: float16
 
 # The operator under test. Swap _target_ to point at any callable.
 module:
-  _target_: debug_compile.ops.SiluMul
+  _target_: ops.silu_mm
+  _partial_: True
+
 
 # Forward inputs. Each entry is a tensor spec; the script materializes them
 # on cfg.device with cfg.dtype and passes them positionally to module.forward.
@@ -44,8 +46,19 @@ npugraph_ex_config:
 # ----- LoRA test mode (lora_test: true) -----
 # Set lora_test: true and point module._target_ at a torch_shrink_* fn.
 # The scalars below are passed to run_lora_test().
-lora_test: false
+lora_test: true
 lora_rank: 8
 lora_hidden_size: 64
 lora_num_loras: 2
 lora_num_requests: 3
+
+
+model_config:
+    model: "/home/russia_mmo/models/Qwen3-4B-Instruct-2507"
+    task: "auto"
+    tokenizer: "/home/russia_mmo/models/Qwen3-4B-Instruct-2507"
+    tokenizer_mode": "auto"
+    trust_remote_code": False
+    dtype": "float16"
+    seed": 0
+    enforce_eager": False

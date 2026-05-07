@@ -5,15 +5,14 @@ For lora ops, use run_lora_test() from main.py to get compile+eager comparison.
 
 import traceback
 import torch
-
+from baselines import sort_metadata
 
 # =============================================================================
 # Simple op (no external deps) – keep as-is for compile-path smoke testing
 # =============================================================================
 
-class SiluMul(torch.nn.Module):
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        return torch.nn.functional.silu(x) * y
+def silu_mm(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    return torch.nn.functional.silu(x) * y
 
 
 # =============================================================================
@@ -143,21 +142,6 @@ def run_lora_test(fn, rank=8, hidden_size=64, num_loras=2, num_requests=3):
     matches the reference torch_shrink_v0 output.
     """
     from triton_lora.common import generate_lora_metadata, production_to_triton_metadata
-
-    def sort_metadata(*metadata):
-        """Same sort as the original test notebook."""
-        (
-            token_lora_tensor,
-            b_seq_start_loc,
-            seq_len_tensor,
-            lora_indices_tensor,
-            batch_size,
-            max_length,
-            token_nums,
-            no_lora,
-        ) = metadata
-        return (b_seq_start_loc, seq_len_tensor, lora_indices_tensor,
-                batch_size, max_length, token_nums, no_lora, token_lora_tensor)
 
     for num_tokens in (1024, 2048, 512):
         for num_slices in (3, 7, 1, 2):
