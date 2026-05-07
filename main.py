@@ -88,6 +88,62 @@ def build_vllm_config(cfg: DictConfig) -> VllmConfig:
     return vllm_config
 
 
+class _FakeGroup:
+    """Stand-in for vllm parallel groups so we don't need init_distributed."""
+    world_size = 1
+    rank_in_group = 0
+    rank = 0
+    local_rank = 0
+    cpu_group = None
+    device_group = None
+
+    def all_reduce(self, x, *a, **k):
+        return x
+
+    def all_gather(self, x, *a, **k):
+        return x
+
+
+def patch_distributed_singletons() -> None:
+    """Replace tp/dp/ep group accessors with single-rank stubs.
+
+    set_ascend_forward_context (and downstream ops) call
+    get_tensor_model_parallel_world_size / get_dp_group / get_ep_group at
+    runtime; without an init_process_group those raise. We don't want to
+    bring distributed up just to debug a single op, so monkey-patch them
+    on every module that's already imported the symbol via `from ... import`.
+    """
+    import importlib
+    import sys
+
+    import vllm.distributed as vd
+
+    fake = _FakeGroup()
+    overrides = {
+        "get_tensor_model_parallel_world_size": lambda: 1,
+        "get_tensor_model_parallel_rank": lambda: 0,
+        "get_dp_group": lambda: fake,
+        "get_ep_group": lambda: fake,
+        "get_pp_group": lambda: fake,
+        "get_tp_group": lambda: fake,
+    }
+    # Patch the canonical module first…
+    for name, fn in overrides.items():
+        if hasattr(vd, name):
+            setattr(vd, name, fn)
+    # …and patch every already-imported module that pulled the symbol in
+    # via `from vllm.distributed import X` (those hold their own binding).
+    for mod_name, mod in list(sys.modules.items()):
+        if mod is None or not getattr(mod, "__name__", "").startswith(
+            ("vllm", "vllm_ascend")
+        ):
+            continue
+        for name, fn in overrides.items():
+            if hasattr(mod, name):
+                setattr(mod, name, fn)
+    _ = importlib  # keep import for clarity
+
+
 def register_ascend_ops(vllm_config: VllmConfig) -> None:
     """Mirror NPUWorker.init_device op-registration block.
 
@@ -133,6 +189,7 @@ def main(cfg: DictConfig) -> None:
     else:
         vllm_config = build_vllm_config(cfg)
         register_ascend_ops(vllm_config)
+        patch_distributed_singletons()
         # ACLGraphWrapper reads batch_descriptor + cudagraph_runtime_mode off
         # the forward context. Use the ascend variant — it adds sp_enabled,
         # moe_comm_type, etc. that vllm_ascend ops/passes read.
