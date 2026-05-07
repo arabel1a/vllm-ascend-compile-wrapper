@@ -34,8 +34,10 @@ from vllm.config import (
     set_current_vllm_config,
 )
 from vllm.config.compilation import CUDAGraphMode
-from vllm.forward_context import BatchDescriptor, set_forward_context
+from vllm.forward_context import BatchDescriptor
 from vllm.platforms import current_platform
+
+from vllm_ascend.ascend_forward_context import set_ascend_forward_context
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +88,32 @@ def build_vllm_config(cfg: DictConfig) -> VllmConfig:
     return vllm_config
 
 
+def register_ascend_ops(vllm_config: VllmConfig) -> None:
+    """Mirror NPUWorker.init_device op-registration block.
+
+    Without this, the FX graph references torch ops that don't exist yet:
+      - torch.ops._C_ascend.weak_ref_tensor (vllm_ascend_C extension)
+      - torch.ops._C_ascend.quantize / fused-norm-quant (atb extensions)
+      - the dummy fusion ops the GraphFusionPassManager rewrites into
+    """
+    from vllm_ascend import ops as _ascend_ops
+    from vllm_ascend.utils import (
+        AscendDeviceType,
+        adapt_patch,
+        enable_custom_op,
+        get_ascend_device_type,
+        register_ascend_customop,
+    )
+    from torch_npu.op_plugin.atb._atb_ops import _register_atb_extensions
+
+    adapt_patch()
+    enable_custom_op()
+    _ascend_ops.register_dummy_fusion_op()
+    if get_ascend_device_type() != AscendDeviceType.A5:
+        _register_atb_extensions()
+    register_ascend_customop(vllm_config)
+
+
 @hydra.main(config_path="conf", config_name="config", version_base="1.3")
 def main(cfg: DictConfig) -> None:
     setup_output_dir(cfg)
@@ -104,19 +132,24 @@ def main(cfg: DictConfig) -> None:
             out = mod(*inputs)
     else:
         vllm_config = build_vllm_config(cfg)
+        register_ascend_ops(vllm_config)
         # ACLGraphWrapper reads batch_descriptor + cudagraph_runtime_mode off
-        # the forward context. Without set_forward_context the wrapper trips
-        # the assert in vllm/forward_context.py:223.
+        # the forward context. Use the ascend variant — it adds sp_enabled,
+        # moe_comm_type, etc. that vllm_ascend ops/passes read.
         num_tokens = int(inputs[0].shape[0])
         with set_current_vllm_config(vllm_config):
             backend = VllmBackend(vllm_config)
-            compiled = torch.compile(mod, backend=backend, fullgraph=True, dynamic=False)
-            with torch.inference_mode(), set_forward_context(
+            # dynamic=True so at least one input dim becomes SymInt; otherwise
+            # PiecewiseBackend.__call__ trips on `args[self.sym_shape_indices[0]]`
+            # (vllm/compilation/piecewise_backend.py:183).
+            compiled = torch.compile(mod, backend=backend, fullgraph=True, dynamic=True)
+            with torch.inference_mode(), set_ascend_forward_context(
                 attn_metadata=None,
                 vllm_config=vllm_config,
                 num_tokens=num_tokens,
-                cudagraph_runtime_mode=CUDAGraphMode.PIECEWISE,
+                aclgraph_runtime_mode=CUDAGraphMode.PIECEWISE,
                 batch_descriptor=BatchDescriptor(num_tokens=num_tokens),
+                model_instance=mod,
             ):
                 out = compiled(*inputs)
 
