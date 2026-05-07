@@ -186,8 +186,6 @@ def main(cfg: DictConfig) -> None:
     mod = eval(cfg.module._target_)
 
     if cfg.get("lora_test", False):
-        # lora ops use triton_lora.generate_lora_metadata to build inputs;
-        # just pass the module + scalars; run_lora_test handles everything.
         assert hasattr(cfg.module, "_target_") and "shrink" in cfg.module._target_, (
             f"lora_test=True requires a torch_shrink_* op, got {cfg.module._target_}"
         )
@@ -195,8 +193,42 @@ def main(cfg: DictConfig) -> None:
         hidden_size = cfg.get("lora_hidden_size", 64)
         num_loras = cfg.get("lora_num_loras", 2)
         num_requests = cfg.get("lora_num_requests", 3)
-        run_lora_test(mod, rank=rank, hidden_size=hidden_size,
-                      num_loras=num_loras, num_requests=num_requests)
+
+        if cfg.compile_path == "eager":
+            run_lora_test(
+                mod,
+                call_fn=None,
+                rank=rank, hidden_size=hidden_size,
+                num_loras=num_loras, num_requests=num_requests,
+            )
+        else:
+            vllm_config = build_vllm_config(cfg)
+            register_ascend_ops(vllm_config)
+            patch_distributed_singletons()
+            with set_current_vllm_config(vllm_config):
+                backend = VllmBackend(vllm_config)
+
+                def call_fn(fn_, inputs_, lora_a_weights_, output_tensor_, *args):
+                    num_tokens = int(inputs_.shape[0])
+                    compiled = torch.compile(
+                        fn_, backend=backend, fullgraph=True, dynamic=True
+                    )
+                    with set_ascend_forward_context(
+                        attn_metadata=None,
+                        vllm_config=vllm_config,
+                        num_tokens=num_tokens,
+                        aclgraph_runtime_mode=CUDAGraphMode.PIECEWISE,
+                        batch_descriptor=BatchDescriptor(num_tokens=num_tokens),
+                        model_instance=fn_,
+                    ):
+                        compiled(inputs_, lora_a_weights_, output_tensor_, *args)
+
+                run_lora_test(
+                    mod,
+                    call_fn=call_fn,
+                    rank=rank, hidden_size=hidden_size,
+                    num_loras=num_loras, num_requests=num_requests,
+                )
         return
 
     inputs = materialize_inputs(cfg)

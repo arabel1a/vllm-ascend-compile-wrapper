@@ -133,55 +133,63 @@ def torch_shrink_v2(
 # Call run_lora_test(fn, rank, hidden_size, num_loras, num_requests) from main.py
 # =============================================================================
 
-def run_lora_test(fn, rank=8, hidden_size=64, num_loras=2, num_requests=3):
+def run_lora_test(fn, call_fn=None, rank=8, hidden_size=64, num_loras=2, num_requests=3):
     """
-    Compare eager vs compiled (or vs reference) on the lora shrink op.
+    Compare eager vs compiled on the lora shrink op.
 
     Generates realistic lora metadata via triton_lora.common, then loops over
     (num_tokens, num_slices) combinations and checks that the output tensor
     matches the reference torch_shrink_v0 output.
+
+    Args:
+        fn: the raw function under test
+        call_fn: if provided (non-eager path), called as
+                 call_fn(fn, inputs, lora_a_weights, output_tensor, *sorted_meta)
+                 to invoke the compiled function inside the forward context.
+                 If None, fn is called directly (eager baseline).
     """
     from triton_lora.common import generate_lora_metadata, production_to_triton_metadata
+    from baselines import sort_metadata
 
     for num_tokens in (1024, 2048, 512):
         for num_slices in (3, 7, 1, 2):
-            try:
-                torch.manual_seed(0)
-                tag = f"tokens={num_tokens} loras={num_loras} slices={num_slices} rank={rank}"
-                print(tag)
+            torch.manual_seed(0)
+            tag = f"tokens={num_tokens} loras={num_loras} slices={num_slices} rank={rank}"
+            print(tag)
 
-                lora_a_weights = [
-                    torch.randn(
-                        num_loras, rank, hidden_size,
-                        dtype=torch.float16, device="npu"
-                    ).contiguous()
-                    for _ in range(num_slices)
-                ]
-                inputs = torch.randn(
-                    num_tokens, hidden_size,
+            lora_a_weights = [
+                torch.randn(
+                    num_loras, rank, hidden_size,
                     dtype=torch.float16, device="npu"
                 ).contiguous()
+                for _ in range(num_slices)
+            ]
+            inputs = torch.randn(
+                num_tokens, hidden_size,
+                dtype=torch.float16, device="npu"
+            ).contiguous()
 
-                metadata = generate_lora_metadata(
-                    num_tokens, num_loras, "npu", num_requests
-                )
-                sorted_meta = sort_metadata(*metadata)
+            metadata = generate_lora_metadata(
+                num_tokens, num_loras, "npu", num_requests
+            )
+            sorted_meta = sort_metadata(*metadata)
 
-                # Reference output via eager torch_shrink_v0
-                ref_out = torch.ones(
-                    num_slices, num_tokens, rank,
-                    dtype=torch.float16, device="npu"
-                )
-                torch_shrink_v0(inputs, lora_a_weights, ref_out, *sorted_meta, 1.0)
+            # Reference output via eager torch_shrink_v0
+            ref_out = torch.ones(
+                num_slices, num_tokens, rank,
+                dtype=torch.float16, device="npu"
+            )
+            torch_shrink_v0(inputs, lora_a_weights, ref_out, *sorted_meta, 1.0)
 
-                # Test target output (eager or compiled)
-                test_out = torch.zeros(
-                    num_slices, num_tokens, rank,
-                    dtype=torch.float16, device="npu"
-                )
+            # Test target output (call_fn handles compile+context, or direct call)
+            test_out = torch.zeros(
+                num_slices, num_tokens, rank,
+                dtype=torch.float16, device="npu"
+            )
+            if call_fn is None:
                 fn(inputs, lora_a_weights, test_out, *sorted_meta, 1.0)
+            else:
+                call_fn(fn, inputs, lora_a_weights, test_out, *sorted_meta, 1.0)
 
-                diff = (test_out - ref_out).abs().sum()
-                print(f"  diff={diff.item()}")
-            except Exception:
-                traceback.print_exc()
+            diff = (test_out - ref_out).abs().sum()
+            print(f"  diff={diff.item()}")
