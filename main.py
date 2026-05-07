@@ -28,6 +28,7 @@ from omegaconf import DictConfig
 from vllm.compilation.backends import VllmBackend
 from vllm.config import (
     CompilationConfig,
+    ModelConfig,
     CompilationMode,
     VllmConfig,
     set_current_vllm_config,
@@ -71,9 +72,11 @@ def build_vllm_config(cfg: DictConfig) -> VllmConfig:
             "enable_static_kernel": cfg.npugraph_ex_config.enable_static_kernel,
         },
     }
+    model_config = ModelConfig(**cfg.model_config)
     vllm_config = VllmConfig(
         compilation_config=compilation_config,
         additional_config=additional_config,
+        model_config=model_config,
     )
     # Mirrors what the engine does at startup: lets NPUPlatform mutate the
     # config in place AND initializes the AscendConfig singleton that
