@@ -16,8 +16,7 @@ hydra:
 device: npu:0
 dtype: float16
 
-# The operator under test. Swap _target_ to point at any nn.Module class.
-# Constructor kwargs go alongside _target_; forward kwargs come from `inputs`.
+# The operator under test. Swap _target_ to point at any callable.
 module:
   _target_: debug_compile.ops.SiluMul
 
@@ -41,3 +40,12 @@ ascend_compilation_config:
 
 npugraph_ex_config:
   enable_static_kernel: False
+
+# ----- LoRA test mode (lora_test: true) -----
+# Set lora_test: true and point module._target_ at a torch_shrink_* fn.
+# The scalars below are passed to run_lora_test().
+lora_test: false
+lora_rank: 8
+lora_hidden_size: 64
+lora_num_loras: 2
+lora_num_requests: 3

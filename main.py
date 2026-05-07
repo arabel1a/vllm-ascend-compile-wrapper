@@ -181,6 +181,22 @@ def main(cfg: DictConfig) -> None:
     )
 
     mod = hydra.utils.instantiate(cfg.module).to(cfg.device).eval()
+
+    if cfg.get("lora_test", False):
+        # lora ops use triton_lora.generate_lora_metadata to build inputs;
+        # just pass the module + scalars; run_lora_test handles everything.
+        assert hasattr(cfg.module, "_target_") and "shrink" in cfg.module._target_, (
+            f"lora_test=True requires a torch_shrink_* op, got {cfg.module._target_}"
+        )
+        rank = cfg.get("lora_rank", 8)
+        hidden_size = cfg.get("lora_hidden_size", 64)
+        num_loras = cfg.get("lora_num_loras", 2)
+        num_requests = cfg.get("lora_num_requests", 3)
+        from debug_compile.ops import run_lora_test
+        run_lora_test(mod, rank=rank, hidden_size=hidden_size,
+                      num_loras=num_loras, num_requests=num_requests)
+        return
+
     inputs = materialize_inputs(cfg)
 
     if cfg.compile_path == "eager":
