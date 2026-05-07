@@ -1,0 +1,43 @@
+defaults:
+  - _self_
+
+run_name: default
+output_dir: outputs/${run_name}
+overwrite: True
+log_level: INFO
+
+seed: 0
+
+hydra:
+  run:
+    dir: ${output_dir}
+  output_subdir: hydra
+
+device: npu:0
+dtype: float16
+
+# The operator under test. Swap _target_ to point at any nn.Module class.
+# Constructor kwargs go alongside _target_; forward kwargs come from `inputs`.
+module:
+  _target_: debug_compile.ops.SiluMul
+
+# Forward inputs. Each entry is a tensor spec; the script materializes them
+# on cfg.device with cfg.dtype and passes them positionally to module.forward.
+inputs:
+  - shape: [4, 16]
+  - shape: [4, 16]
+
+# Compile path:
+#   fusion       -> fusion_pass_compile  (default vllm-ascend path)
+#   npugraph_ex  -> npugraph_ex_compile  (torchair, reduce-overhead aclgraph)
+#   eager        -> skip torch.compile entirely (sanity baseline)
+compile_path: fusion
+
+# Mirrors AscendCompilationConfig in vllm_ascend/ascend_config.py.
+ascend_compilation_config:
+  fuse_norm_quant: True
+  fuse_qknorm_rope: True
+  fuse_allreduce_rms: False
+
+npugraph_ex_config:
+  enable_static_kernel: False
